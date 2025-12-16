@@ -1,0 +1,15 @@
+version: "3.9"
+
+services:
+  redis:
+    image: redis:7
+
+  worker:
+    build: .
+    depends_on:
+      - redis
+    environment:
+      REDIS_ADDR: redis:6379
+      WORKER_COUNT: 5
+      MAX_RETRIES: 3
+      VISIBILITY_TIMEOUT: 10
