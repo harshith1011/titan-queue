@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	_"github.com/lib/pq"
 )
 
 /*
@@ -24,6 +25,7 @@ var (
 	rootCtx context.Context
 	cancel  context.CancelFunc
 	client  *redis.Client
+	db *sql.DB
 )
 
 /*
@@ -114,7 +116,7 @@ RECOVERY
 */
 
 func recoverStaleJobs() {
-	fmt.Println("🧹 [Recovery] Requeuing stale jobs...")
+	fmt.Println(" [Recovery] Requeuing stale jobs...")
 
 	for {
 		_, err := client.LMove(
@@ -130,7 +132,7 @@ func recoverStaleJobs() {
 		}
 	}
 
-	fmt.Println("🧹 [Recovery] Done.")
+	fmt.Println(" [Recovery] Done.")
 }
 
 /*
@@ -166,13 +168,42 @@ JOB PROCESSOR
 */
 
 func processJob(job Job) error {
-	if job.Retries < 2 {
-		return fmt.Errorf("simulated failure")
-	}
 
-	time.Sleep(2 * time.Second)
-	return nil
+    // 1) read payment_id from job payload
+    paymentID := job.Payload["payment_id"].(string)
+
+    // 2) mark PROCESSING
+    _, _ = db.Exec(
+        "UPDATE payments SET status='PROCESSING' WHERE id=$1",
+        paymentID,
+    )
+
+    fmt.Println("Processing payment:", paymentID)
+
+    // ----- simulate gateway delay -----
+    time.Sleep(2 * time.Second)
+
+    // ----- random success/failure -----
+    if rand.Intn(10) < 7 {
+        // SUCCESS
+        _, _ = db.Exec(
+            "UPDATE payments SET status='SUCCESS' WHERE id=$1",
+            paymentID,
+        )
+        fmt.Println("Payment success:", paymentID)
+        return nil
+    }
+
+    // FAILED
+    _, _ = db.Exec(
+        "UPDATE payments SET status='FAILED' WHERE id=$1",
+        paymentID,
+    )
+    fmt.Println("Payment failed:", paymentID)
+
+    return fmt.Errorf("payment failed")
 }
+
 
 /*
 ====================================================
@@ -186,7 +217,7 @@ func startWorker(id int) {
 	for {
 		select {
 		case <-rootCtx.Done():
-			fmt.Printf("[Worker %d] 🛑 Shutting down\n", id)
+			fmt.Printf("[Worker %d] Shutting down\n", id)
 			return
 		default:
 		}
@@ -231,7 +262,7 @@ func startWorker(id int) {
 		if err := processJob(job); err == nil {
 			_ = markProcessed(job.ID)
 			client.LRem(rootCtx, "processing", 1, updatedJobStr)
-			fmt.Printf("[Worker %d] ✅ Job %s completed\n", id, job.ID)
+			fmt.Printf("[Worker %d] Job %s completed\n", id, job.ID)
 			continue
 		}
 
@@ -293,8 +324,24 @@ func startVisibilitySweeper() {
 MAIN
 ====================================================
 */
+func connectDB() (*sql.DB, error){
+	connStr := "host=localhost port=5432 user=postgres password=harshith@123 dbname=payment_go sslmode=disable"
+
+	d,err = sql.Open("postgres",connStr)
+	if err! = nil{
+		return nil,err
+	}
+	return d,d.ping()
+}
 
 func main() {
+	var err error
+	db, err = connectDB()
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("Worker connected to PostgreSQL")
+
 	rootCtx, cancel = context.WithCancel(context.Background())
 	defer cancel()
 
@@ -315,7 +362,7 @@ func main() {
 
 	go func() {
 		<-sigCh
-		fmt.Println("\n🛑 Shutdown signal received")
+		fmt.Println("\n Shutdown signal received")
 		cancel()
 	}()
 
@@ -331,5 +378,5 @@ func main() {
 	}
 
 	wg.Wait()
-	fmt.Println("✅ Shutdown complete")
+	fmt.Println(" Shutdown complete")
 }
